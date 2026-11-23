@@ -5,6 +5,9 @@ import cors from 'cors';
 import authRoutes from './routes/auth.js';
 import serverRoutes from './routes/servers.js';
 import messageRoutes from './routes/messages.js';
+import friendsRoutes from './routes/friends.js';
+import dmRoutes from './routes/dms.js';
+import rolesRoutes from './routes/roles.js';
 import { createSocketServer } from './socket/index.js';
 
 const PORT = Number(process.env.PORT || 4000);
@@ -24,7 +27,10 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/servers', serverRoutes);
+app.use('/api/servers/:serverId/roles', rolesRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/friends', friendsRoutes);
+app.use('/api/dms', dmRoutes);
 
 const server = http.createServer(app);
 const io = createSocketServer(server);

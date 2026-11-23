@@ -1,0 +1,318 @@
+// ============================================================
+// STEP 1 — Production Prisma schema (PostgreSQL)
+// Zero mock data: every table backs real app features
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChannelType {
+  TEXT
+  VOICE
+}
+
+enum FriendStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+}
+
+enum MemberStatus {
+  ONLINE
+  IDLE
+  DND
+  OFFLINE
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String?
+  username      String
+  discriminator String   // 0001-9999 unique with username
+  displayName   String?
+  avatarUrl     String?
+  bio           String?
+  status        MemberStatus @default(OFFLINE)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  ownedServers  Server[]      @relation("ServerOwner")
+  memberships   ServerMember[]
+  messages      Message[]
+  reactions     Reaction[]
+  friendshipsA  Friendship[]  @relation("FriendA")
+  friendshipsB  Friendship[]  @relation("FriendB")
+  dmParticipants DirectMessageParticipant[]
+  dmMessages    DirectMessage[]
+  invitesCreated Invite[]
+  voiceStates   VoiceState[]
+
+  @@unique([username, discriminator])
+  @@index([email])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Server {
+  id          String   @id @default(cuid())
+  name        String
+  iconUrl     String?
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User           @relation("ServerOwner", fields: [ownerId], references: [id])
+  members     ServerMember[]
+  roles       Role[]
+  categories  Category[]
+  channels    Channel[]
+  invites     Invite[]
+
+  @@index([ownerId])
+  @@map("servers")
+}
+
+model ServerMember {
+  id        String       @id @default(cuid())
+  serverId  String
+  userId    String
+  nickname  String?
+  joinedAt  DateTime     @default(now())
+
+  server    Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles     MemberRole[]
+
+  @@unique([serverId, userId])
+  @@index([userId])
+  @@map("server_members")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  serverId    String
+  name        String
+  color       String   @default("#99AAB5")
+  position    Int      @default(0)
+  // Bitfield permissions (Discord-style)
+  permissions BigInt   @default(0)
+  hoist       Boolean  @default(false)
+  mentionable Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  server      Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  members     MemberRole[]
+
+  @@index([serverId, position])
+  @@map("roles")
+}
+
+model MemberRole {
+  memberId String
+  roleId   String
+  member   ServerMember @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role     Role         @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([memberId, roleId])
+  @@map("member_roles")
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  serverId  String
+  name      String
+  position  Int       @default(0)
+  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  channels  Channel[]
+
+  @@index([serverId, position])
+  @@map("categories")
+}
+
+model Channel {
+  id          String      @id @default(cuid())
+  serverId    String
+  categoryId  String?
+  name        String
+  topic       String?
+  type        ChannelType @default(TEXT)
+  position    Int         @default(0)
+  // Slowmode seconds; 0 = off
+  slowmode    Int         @default(0)
+  createdAt   DateTime    @default(now())
+
+  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  category    Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  messages    Message[]
+  voiceStates VoiceState[]
+
+  @@index([serverId, position])
+  @@map("channels")
+}
+
+model Message {
+  id        String    @id @default(cuid())
+  channelId String
+  authorId  String
+  content   String    @db.Text
+  editedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  channel   Channel    @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+  reactions Reaction[]
+
+  @@index([channelId, createdAt])
+  @@map("messages")
+}
+
+model Attachment {
+  id        String  @id @default(cuid())
+  messageId String
+  url       String
+  filename  String
+  mimeType  String
+  size      Int
+  width     Int?
+  height    Int?
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+model Reaction {
+  id        String  @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@map("reactions")
+}
+
+model Friendship {
+  id        String       @id @default(cuid())
+  userAId   String
+  userBId   String
+  status    FriendStatus @default(PENDING)
+  // userA is the requester when PENDING
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  userA     User @relation("FriendA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB     User @relation("FriendB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId])
+  @@index([userBId, status])
+  @@map("friendships")
+}
+
+model DirectMessageChannel {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  participants DirectMessageParticipant[]
+  messages     DirectMessage[]
+
+  @@map("dm_channels")
+}
+
+model DirectMessageParticipant {
+  id        String @id @default(cuid())
+  channelId String
+  userId    String
+  channel   DirectMessageChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+  @@map("dm_participants")
+}
+
+model DirectMessage {
+  id        String   @id @default(cuid())
+  channelId String
+  authorId  String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  editedAt  DateTime?
+
+  channel   DirectMessageChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User                 @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt])
+  @@map("direct_messages")
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  serverId    String
+  creatorId   String
+  maxUses     Int?
+  uses        Int       @default(0)
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  server      Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  creator     User   @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+
+  @@index([code])
+  @@map("invites")
+}
+
+model VoiceState {
+  id        String   @id @default(cuid())
+  channelId String
+  userId    String
+  muted     Boolean  @default(false)
+  deafened  Boolean  @default(false)
+  joinedAt  DateTime @default(now())
+
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+  @@map("voice_states")
+}

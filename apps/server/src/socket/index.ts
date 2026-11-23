@@ -6,6 +6,7 @@ import { assertChannelAccess } from '../middleware/rbac.js';
 
 type AuthedSocket = Socket & { user: AuthUser };
 
+/** userId -> set of socket ids (multi-tab support) */
 const online = new Map<string, Set<string>>();
 
 export function createSocketServer(httpServer: HttpServer) {
@@ -36,6 +37,9 @@ export function createSocketServer(httpServer: HttpServer) {
 
     if (!online.has(userId)) online.set(userId, new Set());
     online.get(userId)!.add(socket.id);
+
+    // Personal room for DMs / friend requests
+    socket.join(`user:${userId}`);
 
     await prisma.user.update({ where: { id: userId }, data: { status: 'ONLINE' } });
     io.emit('presence:update', { userId, status: 'ONLINE' });
@@ -185,6 +189,7 @@ export function createSocketServer(httpServer: HttpServer) {
       });
     });
 
+    /** WebRTC signaling relay (for mesh voice or 1:1 calls until LiveKit is wired) */
     socket.on('webrtc:signal', (payload: { toUserId: string; data: unknown }) => {
       const targets = online.get(payload.toUserId);
       if (!targets) return;

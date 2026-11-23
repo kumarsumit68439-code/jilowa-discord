@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { prisma } from './prisma.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
@@ -13,9 +13,22 @@ export type AuthUser = {
   discriminator: string;
 };
 
+declare global {
+  namespace Express {
+    interface Request {
+      user?: AuthUser;
+    }
+  }
+}
+
 export function signToken(user: AuthUser): string {
   return jwt.sign(
-    { sub: user.id, email: user.email, username: user.username, discriminator: user.discriminator },
+    {
+      sub: user.id,
+      email: user.email,
+      username: user.username,
+      discriminator: user.discriminator,
+    },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES }
   );
@@ -44,7 +57,6 @@ export async function comparePassword(password: string, hash: string): Promise<b
   return bcrypt.compare(password, hash);
 }
 
-/** Allocate unique discriminator 0001-9999 for username */
 export async function nextDiscriminator(username: string): Promise<string> {
   const existing = await prisma.user.findMany({
     where: { username: { equals: username, mode: 'insensitive' } },
@@ -58,9 +70,8 @@ export async function nextDiscriminator(username: string): Promise<string> {
   throw new Error('No discriminators left for this username');
 }
 
-export type AuthedRequest = Request & { user: AuthUser };
-
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+/** Ensures req.user is set; use after this for authenticated routes */
+export const requireAuth: RequestHandler = (req, res, next) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   const user = token ? verifyToken(token) : null;
@@ -68,8 +79,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
-  (req as AuthedRequest).user = user;
+  req.user = user;
   next();
+};
+
+export function getUser(req: Request): AuthUser {
+  if (!req.user) throw new Error('requireAuth missing');
+  return req.user;
 }
 
 export function socketUserFromToken(token?: string): AuthUser | null {

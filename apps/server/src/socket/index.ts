@@ -6,7 +6,6 @@ import { assertChannelAccess } from '../middleware/rbac.js';
 
 type AuthedSocket = Socket & { user: AuthUser };
 
-/** userId -> set of socket ids */
 const online = new Map<string, Set<string>>();
 
 export function createSocketServer(httpServer: HttpServer) {
@@ -20,8 +19,8 @@ export function createSocketServer(httpServer: HttpServer) {
 
   io.use((socket, next) => {
     const token =
-      (socket.handshake.auth?.token as string) ||
-      (socket.handshake.headers.authorization?.replace('Bearer ', '') as string);
+      (socket.handshake.auth?.token as string | undefined) ||
+      (socket.handshake.headers.authorization?.replace('Bearer ', '') as string | undefined);
     const user = socketUserFromToken(token);
     if (!user) {
       next(new Error('Unauthorized'));
@@ -41,7 +40,6 @@ export function createSocketServer(httpServer: HttpServer) {
     await prisma.user.update({ where: { id: userId }, data: { status: 'ONLINE' } });
     io.emit('presence:update', { userId, status: 'ONLINE' });
 
-    // Join all server rooms the user belongs to
     const memberships = await prisma.serverMember.findMany({
       where: { userId },
       select: { serverId: true },
@@ -81,7 +79,6 @@ export function createSocketServer(httpServer: HttpServer) {
       });
     });
 
-    // Real message create via socket (also persisted)
     socket.on(
       'message:create',
       async (
@@ -125,10 +122,12 @@ export function createSocketServer(httpServer: HttpServer) {
       }
     );
 
-    // Voice channel presence (signaling prep for LiveKit/WebRTC)
     socket.on(
       'voice:join',
-      async (payload: { channelId: string }, cb?: (r: { ok: boolean; peers?: string[] }) => void) => {
+      async (
+        payload: { channelId: string },
+        cb?: (r: { ok: boolean; peers?: string[] }) => void
+      ) => {
         if (!(await assertChannelAccess(userId, payload.channelId))) {
           cb?.({ ok: false });
           return;
@@ -139,7 +138,9 @@ export function createSocketServer(httpServer: HttpServer) {
           return;
         }
         await prisma.voiceState.upsert({
-          where: { channelId_userId: { channelId: payload.channelId, userId } },
+          where: {
+            channelId_userId: { channelId: payload.channelId, userId },
+          },
           create: { channelId: payload.channelId, userId },
           update: {},
         });
@@ -148,17 +149,23 @@ export function createSocketServer(httpServer: HttpServer) {
           where: { channelId: payload.channelId },
           select: { userId: true },
         });
+        const peerIds: string[] = peers.map((p: { userId: string }) => p.userId);
         io.to(`server:${channel.serverId}`).emit('voice:state', {
           channelId: payload.channelId,
-          users: peers.map((p) => p.userId),
+          users: peerIds,
         });
-        socket.to(`voice:${payload.channelId}`).emit('voice:user-joined', { userId, channelId: payload.channelId });
-        cb?.({ ok: true, peers: peers.map((p) => p.userId) });
+        socket.to(`voice:${payload.channelId}`).emit('voice:user-joined', {
+          userId,
+          channelId: payload.channelId,
+        });
+        cb?.({ ok: true, peers: peerIds });
       }
     );
 
     socket.on('voice:leave', async (payload: { channelId: string }) => {
-      await prisma.voiceState.deleteMany({ where: { channelId: payload.channelId, userId } });
+      await prisma.voiceState.deleteMany({
+        where: { channelId: payload.channelId, userId },
+      });
       socket.leave(`voice:${payload.channelId}`);
       const channel = await prisma.channel.findUnique({ where: { id: payload.channelId } });
       if (channel) {
@@ -166,15 +173,18 @@ export function createSocketServer(httpServer: HttpServer) {
           where: { channelId: payload.channelId },
           select: { userId: true },
         });
+        const peerIds: string[] = peers.map((p: { userId: string }) => p.userId);
         io.to(`server:${channel.serverId}`).emit('voice:state', {
           channelId: payload.channelId,
-          users: peers.map((p) => p.userId),
+          users: peerIds,
         });
       }
-      socket.to(`voice:${payload.channelId}`).emit('voice:user-left', { userId, channelId: payload.channelId });
+      socket.to(`voice:${payload.channelId}`).emit('voice:user-left', {
+        userId,
+        channelId: payload.channelId,
+      });
     });
 
-    // WebRTC signaling relay (for PeerJS-style or custom mesh)
     socket.on('webrtc:signal', (payload: { toUserId: string; data: unknown }) => {
       const targets = online.get(payload.toUserId);
       if (!targets) return;

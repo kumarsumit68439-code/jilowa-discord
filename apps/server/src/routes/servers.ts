@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, type AuthedRequest } from '../lib/auth.js';
+import { getUser, requireAuth } from '../lib/auth.js';
 import { DEFAULT_EVERYONE, ADMIN_ALL, Permissions } from '../lib/permissions.js';
 import { requireServerPermission } from '../middleware/rbac.js';
 
@@ -10,7 +11,7 @@ const router = Router();
 router.use(requireAuth);
 
 router.get('/', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const memberships = await prisma.serverMember.findMany({
     where: { userId: user.id },
     include: {
@@ -26,14 +27,16 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const { user } = req as AuthedRequest;
-  const body = z.object({ name: z.string().min(2).max(100), iconUrl: z.string().url().optional() }).safeParse(req.body);
+  const user = getUser(req);
+  const body = z
+    .object({ name: z.string().min(2).max(100), iconUrl: z.string().url().optional() })
+    .safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.flatten() });
     return;
   }
 
-  const server = await prisma.$transaction(async (tx) => {
+  const server = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const s = await tx.server.create({
       data: {
         name: body.data.name,
@@ -83,9 +86,11 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:serverId', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const member = await prisma.serverMember.findUnique({
-    where: { serverId_userId: { serverId: req.params.serverId, userId: user.id } },
+    where: {
+      serverId_userId: { serverId: req.params.serverId, userId: user.id },
+    },
   });
   if (!member) {
     res.status(403).json({ error: 'Forbidden' });
@@ -154,7 +159,7 @@ router.post(
   '/:serverId/invites',
   requireServerPermission(Permissions.CREATE_INSTANT_INVITE),
   async (req, res) => {
-    const { user } = req as AuthedRequest;
+    const user = getUser(req);
     const body = z
       .object({
         maxUses: z.number().int().positive().optional(),
@@ -171,7 +176,7 @@ router.post(
         code,
         serverId: req.params.serverId,
         creatorId: user.id,
-        maxUses: body.success ? body.data.maxUses : null,
+        maxUses: body.success ? body.data.maxUses ?? null : null,
         expiresAt,
       },
     });
@@ -180,7 +185,7 @@ router.post(
 );
 
 router.post('/join/:code', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const invite = await prisma.invite.findUnique({ where: { code: req.params.code } });
   if (!invite) {
     res.status(404).json({ error: 'Invalid invite' });
@@ -195,7 +200,9 @@ router.post('/join/:code', async (req, res) => {
     return;
   }
   const existing = await prisma.serverMember.findUnique({
-    where: { serverId_userId: { serverId: invite.serverId, userId: user.id } },
+    where: {
+      serverId_userId: { serverId: invite.serverId, userId: user.id },
+    },
   });
   if (existing) {
     res.json({ serverId: invite.serverId, alreadyMember: true });
@@ -204,17 +211,25 @@ router.post('/join/:code', async (req, res) => {
   const everyone = await prisma.role.findFirst({
     where: { serverId: invite.serverId, name: '@everyone' },
   });
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const member = await tx.serverMember.create({
       data: { serverId: invite.serverId, userId: user.id },
     });
     if (everyone) {
-      await tx.memberRole.create({ data: { memberId: member.id, roleId: everyone.id } });
+      await tx.memberRole.create({
+        data: { memberId: member.id, roleId: everyone.id },
+      });
     }
-    await tx.invite.update({ where: { id: invite.id }, data: { uses: { increment: 1 } } });
+    await tx.invite.update({
+      where: { id: invite.id },
+      data: { uses: { increment: 1 } },
+    });
   });
   const io = req.app.get('io');
-  io?.to(`server:${invite.serverId}`).emit('member:joined', { userId: user.id, serverId: invite.serverId });
+  io?.to(`server:${invite.serverId}`).emit('member:joined', {
+    userId: user.id,
+    serverId: invite.serverId,
+  });
   res.status(201).json({ serverId: invite.serverId });
 });
 

@@ -1,14 +1,22 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, type AuthedRequest } from '../lib/auth.js';
+import { getUser, requireAuth } from '../lib/auth.js';
 import { assertChannelAccess } from '../middleware/rbac.js';
 
 const router = Router();
 router.use(requireAuth);
 
+const authorSelect = {
+  id: true,
+  username: true,
+  discriminator: true,
+  displayName: true,
+  avatarUrl: true,
+} as const;
+
 router.get('/channels/:channelId', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const ok = await assertChannelAccess(user.id, req.params.channelId);
   if (!ok) {
     res.status(403).json({ error: 'Forbidden' });
@@ -22,15 +30,7 @@ router.get('/channels/:channelId', async (req, res) => {
     take,
     ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     include: {
-      author: {
-        select: {
-          id: true,
-          username: true,
-          discriminator: true,
-          displayName: true,
-          avatarUrl: true,
-        },
-      },
+      author: { select: authorSelect },
       attachments: true,
       reactions: true,
     },
@@ -39,7 +39,7 @@ router.get('/channels/:channelId', async (req, res) => {
 });
 
 router.post('/channels/:channelId', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const ok = await assertChannelAccess(user.id, req.params.channelId);
   if (!ok) {
     res.status(403).json({ error: 'Forbidden' });
@@ -57,15 +57,7 @@ router.post('/channels/:channelId', async (req, res) => {
       content: body.data.content,
     },
     include: {
-      author: {
-        select: {
-          id: true,
-          username: true,
-          discriminator: true,
-          displayName: true,
-          avatarUrl: true,
-        },
-      },
+      author: { select: authorSelect },
       attachments: true,
       reactions: true,
     },
@@ -76,7 +68,7 @@ router.post('/channels/:channelId', async (req, res) => {
 });
 
 router.patch('/:messageId', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const body = z.object({ content: z.string().min(1).max(4000) }).safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: 'content required' });
@@ -91,15 +83,7 @@ router.patch('/:messageId', async (req, res) => {
     where: { id: existing.id },
     data: { content: body.data.content, editedAt: new Date() },
     include: {
-      author: {
-        select: {
-          id: true,
-          username: true,
-          discriminator: true,
-          displayName: true,
-          avatarUrl: true,
-        },
-      },
+      author: { select: authorSelect },
       attachments: true,
       reactions: true,
     },
@@ -110,7 +94,7 @@ router.patch('/:messageId', async (req, res) => {
 });
 
 router.delete('/:messageId', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const existing = await prisma.message.findUnique({ where: { id: req.params.messageId } });
   if (!existing || existing.authorId !== user.id) {
     res.status(403).json({ error: 'Forbidden' });
@@ -129,7 +113,7 @@ router.delete('/:messageId', async (req, res) => {
 });
 
 router.post('/:messageId/reactions', async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const body = z.object({ emoji: z.string().min(1).max(32) }).safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: 'emoji required' });
@@ -153,7 +137,11 @@ router.post('/:messageId/reactions', async (req, res) => {
         emoji: body.data.emoji,
       },
     },
-    create: { messageId: existing.id, userId: user.id, emoji: body.data.emoji },
+    create: {
+      messageId: existing.id,
+      userId: user.id,
+      emoji: body.data.emoji,
+    },
     update: {},
   });
   const io = req.app.get('io');

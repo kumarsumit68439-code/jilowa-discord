@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
 import {
   comparePassword,
+  getUser,
   hashPassword,
   nextDiscriminator,
   requireAuth,
   signToken,
-  type AuthedRequest,
 } from '../lib/auth.js';
 
 const router = Router();
@@ -34,7 +34,9 @@ router.post('/register', async (req, res) => {
     return;
   }
   const { email, password, username } = parsed.data;
-  const exists = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  const exists = await prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
+  });
   if (exists) {
     res.status(409).json({ error: 'Email already registered' });
     return;
@@ -77,7 +79,9 @@ router.post('/login', async (req, res) => {
     res.status(400).json({ error: 'Invalid body' });
     return;
   }
-  const user = await prisma.user.findUnique({ where: { email: parsed.data.email.toLowerCase() } });
+  const user = await prisma.user.findUnique({
+    where: { email: parsed.data.email.toLowerCase() },
+  });
   if (!user?.passwordHash) {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
@@ -109,7 +113,7 @@ router.post('/login', async (req, res) => {
 });
 
 router.get('/me', requireAuth, async (req, res) => {
-  const { user } = req as AuthedRequest;
+  const user = getUser(req);
   const db = await prisma.user.findUnique({ where: { id: user.id } });
   if (!db) {
     res.status(404).json({ error: 'User not found' });

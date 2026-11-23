@@ -2,9 +2,11 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { prisma } from './prisma.js';
+import service from '../service.mjs';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
-const JWT_EXPIRES = process.env.JWT_EXPIRES || '7d';
+const appInput = service.input();
+const JWT_SECRET = appInput.jwtSecret.expose();
+const JWT_EXPIRES = appInput.jwtExpires || '7d';
 
 export type AuthUser = {
   id: string;
@@ -30,7 +32,7 @@ export function signToken(user: AuthUser): string {
       discriminator: user.discriminator,
     },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES }
+    { expiresIn: JWT_EXPIRES as jwt.SignOptions['expiresIn'] }
   );
 }
 
@@ -58,10 +60,10 @@ export async function comparePassword(password: string, hash: string): Promise<b
 }
 
 export async function nextDiscriminator(username: string): Promise<string> {
-  const existing = await prisma.user.findMany({
-    where: { username: { equals: username, mode: 'insensitive' } },
-    select: { discriminator: true },
-  });
+  const rows = await prisma.orm.public.User.select('discriminator').where((u) =>
+    u.username.ilike(username)
+  );
+  const existing = await rows.all();
   const used = new Set(existing.map((e) => e.discriminator));
   for (let i = 1; i <= 9999; i++) {
     const d = String(i).padStart(4, '0');

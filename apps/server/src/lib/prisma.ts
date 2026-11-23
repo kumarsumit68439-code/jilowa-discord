@@ -1,11 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import service from "../service.mjs";
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const { db } = service.load();
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
-  });
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+export const prisma = db.client;

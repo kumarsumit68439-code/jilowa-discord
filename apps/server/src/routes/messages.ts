@@ -7,13 +7,16 @@ import { assertChannelAccess } from '../middleware/rbac.js';
 const router = Router();
 router.use(requireAuth);
 
-const authorSelect = {
-  id: true,
-  username: true,
-  discriminator: true,
-  displayName: true,
-  avatarUrl: true,
-} as const;
+const AUTHOR_FIELDS = ['id', 'username', 'discriminator', 'displayName', 'avatarUrl'] as const;
+
+function messageWithRelations(id: string) {
+  return prisma.orm.public.Message
+    .where({ id })
+    .include('author', (a) => a.select(...AUTHOR_FIELDS))
+    .include('attachments')
+    .include('reactions')
+    .first();
+}
 
 router.get('/channels/:channelId', async (req, res) => {
   const user = getUser(req);
@@ -24,18 +27,29 @@ router.get('/channels/:channelId', async (req, res) => {
   }
   const cursor = req.query.cursor as string | undefined;
   const take = Math.min(Number(req.query.limit) || 50, 100);
-  const messages = await prisma.message.findMany({
-    where: { channelId: req.params.channelId, deletedAt: null },
-    orderBy: { createdAt: 'desc' },
-    take,
-    ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-    include: {
-      author: { select: authorSelect },
-      attachments: true,
-      reactions: true,
-    },
-  });
-  res.json({ messages: messages.reverse(), nextCursor: messages[0]?.id ?? null });
+  let cursorRow: { createdAt: Date | null } | null = null;
+  if (cursor) {
+    cursorRow = await prisma.orm.public.Message
+      .select('createdAt')
+      .where({ id: cursor })
+      .first();
+    if (!cursorRow) {
+      res.status(404).json({ error: 'Cursor not found' });
+      return;
+    }
+  }
+  const page = await prisma.orm.public.Message
+    .where((m) => m.channelId.eq(req.params.channelId))
+    .where((m) => m.deletedAt.isNull())
+    .include('author', (a) => a.select(...AUTHOR_FIELDS))
+    .include('attachments')
+    .include('reactions')
+    .orderBy([(m) => m.createdAt.desc(), (m) => m.id.desc()])
+    .cursor(cursorRow ? { createdAt: cursorRow.createdAt, id: cursor } : {})
+    .limit(take)
+    .all();
+  const messages = [...page].reverse();
+  res.json({ messages, nextCursor: messages[0]?.id ?? null });
 });
 
 router.post('/channels/:channelId', async (req, res) => {
@@ -50,18 +64,12 @@ router.post('/channels/:channelId', async (req, res) => {
     res.status(400).json({ error: 'content required' });
     return;
   }
-  const message = await prisma.message.create({
-    data: {
-      channelId: req.params.channelId,
-      authorId: user.id,
-      content: body.data.content,
-    },
-    include: {
-      author: { select: authorSelect },
-      attachments: true,
-      reactions: true,
-    },
+  const created = await prisma.orm.public.Message.create({
+    channelId: req.params.channelId,
+    authorId: user.id,
+    content: body.data.content,
   });
+  const message = await messageWithRelations(created.id);
   const io = req.app.get('io');
   io?.to(`channel:${req.params.channelId}`).emit('message:create', message);
   res.status(201).json(message);
@@ -74,36 +82,34 @@ router.patch('/:messageId', async (req, res) => {
     res.status(400).json({ error: 'content required' });
     return;
   }
-  const existing = await prisma.message.findUnique({ where: { id: req.params.messageId } });
+  const existing = await prisma.orm.public.Message
+    .where({ id: req.params.messageId })
+    .first();
   if (!existing || existing.authorId !== user.id) {
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
-  const message = await prisma.message.update({
-    where: { id: existing.id },
-    data: { content: body.data.content, editedAt: new Date() },
-    include: {
-      author: { select: authorSelect },
-      attachments: true,
-      reactions: true,
-    },
-  });
+  await prisma.orm.public.Message
+    .where({ id: existing.id })
+    .update({ content: body.data.content, editedAt: new Date() });
+  const message = await messageWithRelations(existing.id);
   const io = req.app.get('io');
-  io?.to(`channel:${message.channelId}`).emit('message:update', message);
+  io?.to(`channel:${message?.channelId ?? existing.channelId}`).emit('message:update', message);
   res.json(message);
 });
 
 router.delete('/:messageId', async (req, res) => {
   const user = getUser(req);
-  const existing = await prisma.message.findUnique({ where: { id: req.params.messageId } });
+  const existing = await prisma.orm.public.Message
+    .where({ id: req.params.messageId })
+    .first();
   if (!existing || existing.authorId !== user.id) {
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
-  await prisma.message.update({
-    where: { id: existing.id },
-    data: { deletedAt: new Date(), content: '' },
-  });
+  await prisma.orm.public.Message
+    .where({ id: existing.id })
+    .update({ deletedAt: new Date(), content: '' });
   const io = req.app.get('io');
   io?.to(`channel:${existing.channelId}`).emit('message:delete', {
     id: existing.id,
@@ -119,7 +125,9 @@ router.post('/:messageId/reactions', async (req, res) => {
     res.status(400).json({ error: 'emoji required' });
     return;
   }
-  const existing = await prisma.message.findUnique({ where: { id: req.params.messageId } });
+  const existing = await prisma.orm.public.Message
+    .where({ id: req.params.messageId })
+    .first();
   if (!existing) {
     res.status(404).json({ error: 'Not found' });
     return;
@@ -129,22 +137,23 @@ router.post('/:messageId/reactions', async (req, res) => {
     res.status(403).json({ error: 'Forbidden' });
     return;
   }
-  const reaction = await prisma.reaction.upsert({
-    where: {
-      messageId_userId_emoji: {
+  await prisma.orm.public.Reaction.createAndCount(
+    [
+      {
         messageId: existing.id,
         userId: user.id,
         emoji: body.data.emoji,
       },
-    },
-    create: {
+    ],
+    { onConflict: 'skip', conflictOn: ['messageId', 'userId', 'emoji'] }
+  );
+  const reaction = await prisma.orm.public.Reaction
+    .where({
       messageId: existing.id,
       userId: user.id,
       emoji: body.data.emoji,
-    },
-    update: {},
-  });
-  const io = req.app.get('io');
+    })
+    .first();  const io = req.app.get('io');
   io?.to(`channel:${existing.channelId}`).emit('reaction:add', reaction);
   res.status(201).json(reaction);
 });

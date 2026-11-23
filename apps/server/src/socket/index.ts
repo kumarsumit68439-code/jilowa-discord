@@ -8,10 +8,10 @@ type AuthedSocket = Socket & { user: AuthUser };
 
 const online = new Map<string, Set<string>>();
 
-export function createSocketServer(httpServer: HttpServer) {
+export function createSocketServer(httpServer: HttpServer, corsOrigin: string[]) {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'],
+      origin: corsOrigin,
       credentials: true,
     },
     path: '/socket.io',
@@ -37,13 +37,13 @@ export function createSocketServer(httpServer: HttpServer) {
     if (!online.has(userId)) online.set(userId, new Set());
     online.get(userId)!.add(socket.id);
 
-    await prisma.user.update({ where: { id: userId }, data: { status: 'ONLINE' } });
+    await prisma.orm.public.User.where({ id: userId }).update({ status: 'ONLINE' });
     io.emit('presence:update', { userId, status: 'ONLINE' });
 
-    const memberships = await prisma.serverMember.findMany({
-      where: { userId },
-      select: { serverId: true },
-    });
+    const memberships = await prisma.orm.public.ServerMember
+      .select('serverId')
+      .where({ userId })
+      .all();
     for (const m of memberships) {
       socket.join(`server:${m.serverId}`);
     }
@@ -94,26 +94,19 @@ export function createSocketServer(httpServer: HttpServer) {
             cb?.({ ok: false, error: 'Empty' });
             return;
           }
-          const message = await prisma.message.create({
-            data: {
-              channelId: payload.channelId,
-              authorId: userId,
-              content: payload.content.trim().slice(0, 4000),
-            },
-            include: {
-              author: {
-                select: {
-                  id: true,
-                  username: true,
-                  discriminator: true,
-                  displayName: true,
-                  avatarUrl: true,
-                },
-              },
-              attachments: true,
-              reactions: true,
-            },
+          const created = await prisma.orm.public.Message.create({
+            channelId: payload.channelId,
+            authorId: userId,
+            content: payload.content.trim().slice(0, 4000),
           });
+          const message = await prisma.orm.public.Message
+            .where({ id: created.id })
+            .include('author', (a) =>
+              a.select('id', 'username', 'discriminator', 'displayName', 'avatarUrl')
+            )
+            .include('attachments')
+            .include('reactions')
+            .first();
           io.to(`channel:${payload.channelId}`).emit('message:create', message);
           cb?.({ ok: true, message });
         } catch (e) {
@@ -132,23 +125,20 @@ export function createSocketServer(httpServer: HttpServer) {
           cb?.({ ok: false });
           return;
         }
-        const channel = await prisma.channel.findUnique({ where: { id: payload.channelId } });
+        const channel = await prisma.orm.public.Channel.first({ id: payload.channelId });
         if (!channel || channel.type !== 'VOICE') {
           cb?.({ ok: false });
           return;
         }
-        await prisma.voiceState.upsert({
-          where: {
-            channelId_userId: { channelId: payload.channelId, userId },
-          },
-          create: { channelId: payload.channelId, userId },
-          update: {},
-        });
+        await prisma.orm.public.VoiceState.createAndCount(
+          [{ channelId: payload.channelId, userId }],
+          { onConflict: 'skip', conflictOn: ['channelId', 'userId'] }
+        );
         socket.join(`voice:${payload.channelId}`);
-        const peers = await prisma.voiceState.findMany({
-          where: { channelId: payload.channelId },
-          select: { userId: true },
-        });
+        const peers = await prisma.orm.public.VoiceState
+          .select('userId')
+          .where({ channelId: payload.channelId })
+          .all();
         const peerIds: string[] = peers.map((p: { userId: string }) => p.userId);
         io.to(`server:${channel.serverId}`).emit('voice:state', {
           channelId: payload.channelId,
@@ -163,16 +153,16 @@ export function createSocketServer(httpServer: HttpServer) {
     );
 
     socket.on('voice:leave', async (payload: { channelId: string }) => {
-      await prisma.voiceState.deleteMany({
-        where: { channelId: payload.channelId, userId },
-      });
+      await prisma.orm.public.VoiceState
+        .where({ channelId: payload.channelId, userId })
+        .deleteAll();
       socket.leave(`voice:${payload.channelId}`);
-      const channel = await prisma.channel.findUnique({ where: { id: payload.channelId } });
+      const channel = await prisma.orm.public.Channel.first({ id: payload.channelId });
       if (channel) {
-        const peers = await prisma.voiceState.findMany({
-          where: { channelId: payload.channelId },
-          select: { userId: true },
-        });
+        const peers = await prisma.orm.public.VoiceState
+          .select('userId')
+          .where({ channelId: payload.channelId })
+          .all();
         const peerIds: string[] = peers.map((p: { userId: string }) => p.userId);
         io.to(`server:${channel.serverId}`).emit('voice:state', {
           channelId: payload.channelId,
@@ -198,8 +188,8 @@ export function createSocketServer(httpServer: HttpServer) {
       set?.delete(socket.id);
       if (set && set.size === 0) {
         online.delete(userId);
-        await prisma.user.update({ where: { id: userId }, data: { status: 'OFFLINE' } });
-        await prisma.voiceState.deleteMany({ where: { userId } });
+        await prisma.orm.public.User.where({ id: userId }).update({ status: 'OFFLINE' });
+        await prisma.orm.public.VoiceState.where({ userId }).deleteAll();
         io.emit('presence:update', { userId, status: 'OFFLINE' });
       }
     });

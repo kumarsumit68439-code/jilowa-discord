@@ -12,10 +12,11 @@ export async function getMemberPermissions(
   serverId: string,
   userId: string
 ): Promise<bigint | null> {
-  const member = await prisma.serverMember.findUnique({
-    where: { serverId_userId: { serverId, userId } },
-    include: { roles: { include: { role: true } }, server: true },
-  });
+  const member = await prisma.orm.public.ServerMember
+    .where({ serverId, userId })
+    .include('roles', (r) => r.include('role'))
+    .include('server')
+    .first();
   if (!member) return null;
   if (member.server.ownerId === userId) {
     return Object.values(Permissions).reduce((a, b) => a | b, 0n);
@@ -53,15 +54,12 @@ export async function assertChannelAccess(
   userId: string,
   channelId: string
 ): Promise<boolean> {
-  const channel = await prisma.channel.findUnique({
-    where: { id: channelId },
-    select: { serverId: true },
-  });
+  const channel = await prisma.orm.public.Channel
+    .select('serverId')
+    .first({ id: channelId });
   if (!channel) return false;
-  const member = await prisma.serverMember.findUnique({
-    where: {
-      serverId_userId: { serverId: channel.serverId, userId },
-    },
-  });
+  const member = await prisma.orm.public.ServerMember
+    .where({ serverId: channel.serverId, userId })
+    .first();
   return !!member;
 }

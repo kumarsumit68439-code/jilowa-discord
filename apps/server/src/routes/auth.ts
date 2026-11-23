@@ -34,24 +34,22 @@ router.post('/register', async (req, res) => {
     return;
   }
   const { email, password, username } = parsed.data;
-  const exists = await prisma.user.findUnique({
-    where: { email: email.toLowerCase() },
-  });
+  const exists = await prisma.orm.public.User.where({
+    email: email.toLowerCase(),
+  }).first();
   if (exists) {
     res.status(409).json({ error: 'Email already registered' });
     return;
   }
   const discriminator = await nextDiscriminator(username);
   const passwordHash = await hashPassword(password);
-  const user = await prisma.user.create({
-    data: {
-      email: email.toLowerCase(),
-      passwordHash,
-      username,
-      discriminator,
-      displayName: username,
-      status: 'ONLINE',
-    },
+  const user = await prisma.orm.public.User.create({
+    email: email.toLowerCase(),
+    passwordHash,
+    username,
+    discriminator,
+    displayName: username,
+    status: 'ONLINE',
   });
   const token = signToken({
     id: user.id,
@@ -79,9 +77,9 @@ router.post('/login', async (req, res) => {
     res.status(400).json({ error: 'Invalid body' });
     return;
   }
-  const user = await prisma.user.findUnique({
-    where: { email: parsed.data.email.toLowerCase() },
-  });
+  const user = await prisma.orm.public.User
+    .where({ email: parsed.data.email.toLowerCase() })
+    .first();
   if (!user?.passwordHash) {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
@@ -91,7 +89,9 @@ router.post('/login', async (req, res) => {
     res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
-  await prisma.user.update({ where: { id: user.id }, data: { status: 'ONLINE' } });
+  await prisma.orm.public.User
+    .where({ id: user.id })
+    .update({ status: 'ONLINE' });
   const token = signToken({
     id: user.id,
     email: user.email,
@@ -114,7 +114,7 @@ router.post('/login', async (req, res) => {
 
 router.get('/me', requireAuth, async (req, res) => {
   const user = getUser(req);
-  const db = await prisma.user.findUnique({ where: { id: user.id } });
+  const db = await prisma.orm.public.User.first({ id: user.id });
   if (!db) {
     res.status(404).json({ error: 'User not found' });
     return;

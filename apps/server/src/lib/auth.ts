@@ -1,10 +1,11 @@
 import jwt from 'jsonwebtoken';
+import type { SignOptions } from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { prisma } from './prisma.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
-const JWT_EXPIRES = process.env.JWT_EXPIRES || '7d';
+const JWT_EXPIRES = (process.env.JWT_EXPIRES || '7d') as SignOptions['expiresIn'];
 
 export type AuthUser = {
   id: string;
